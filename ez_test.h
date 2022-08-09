@@ -9,13 +9,33 @@
  * (See accompanying file LICENSE.txt or copy at https://www.boost.org/LICENSE_1_0.txt)
  */
 
-#pragma once
+#ifndef EZ_TEST_H
+#define EZ_TEST_H
 
 #include <functional>
 #include <chrono>
 #include <vector>
 #include <iostream>
 #include <iomanip>
+#include <ctime>
+
+namespace test {
+
+class Stopwatch {
+public:
+  void start() { running = true; tStart = clock(); }
+  void stop() { running = false; tStop = clock(); }
+
+  clock_t elapsed() const {
+    if (running) return (clock() - tStart) / CLOCKS_PER_SECOND;
+    return tStop - tStart;
+  }
+
+private:
+  clock_t tStart = 0;
+  clock_t tStop = 0;
+  bool running = false;
+};
 
 /**
  * TestContext
@@ -32,6 +52,7 @@ class TestContext {
 public:
   /**
    * If actual == theoretical, does nothing. Otherwise, increments the tests failed count.
+   * Returns the result of `actual == theoretical`.
    */
   template <typename T, typename U>
   bool expectEqual(const T& actual, const U& theoretical);
@@ -125,3 +146,7 @@ std::ostream& operator<<(std::ostream& out, const std::vector<T> v) {
 
   return out;
 }
+
+}
+
+#endif
