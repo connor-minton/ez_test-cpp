@@ -12,29 +12,86 @@
 #ifndef EZ_TEST_H
 #define EZ_TEST_H
 
-#include <functional>
-#include <chrono>
+#include <string>
 #include <vector>
 #include <iostream>
 #include <iomanip>
 #include <ctime>
+#include <stdexcept>
 
 namespace test {
 
+class TestContext;
+
+typedef void(*TestFunction)(TestContext&);
+
+/**
+ * Stopwatch
+ *
+ * A crude stopwatch. The stopwatch is in a reset and paused state upon
+ * construction. elapsed() can be called at any time to check the current
+ * duration.
+ */
 class Stopwatch {
 public:
-  void start() { running = true; tStart = clock(); }
-  void stop() { running = false; tStop = clock(); }
+  /**
+   * Starts (unpauses) the stopwatch.
+   */
+  void start() {
+    if (intervals.size() > 0 && intervals.back().running) {
+      throw std::runtime_error("Stopwatch: start() called while stopwatch is running");
+    }
+    Interval iv = {
+      .tStart = clock(),
+      .tStop = 0,
+      .running = true,
+    };
+    intervals.push_back(iv);
+  }
 
+  /**
+   * Stops (pauses) the stopwatch. After the call, stopwatch can be resumed by
+   * calling start() or reset by calling reset().
+   */
+  void stop() {
+    if (intervals.size() == 0 || !intervals.back().running) {
+      throw std::runtime_error("Stopwatch: stop() called while stopwatch is not running");
+    }
+    intervals.back().running = false;
+    intervals.back().tStop = clock();
+  }
+
+  /**
+   * Resets the stopwatch. Can be called at any time.
+   */
+  void reset() { intervals.clear(); }
+
+  /**
+   * Returns the approximate duration the stopwatch has been in the running state
+   * since the last reset.
+   */
   clock_t elapsed() const {
-    if (running) return (clock() - tStart) / CLOCKS_PER_SECOND;
-    return tStop - tStart;
+    clock_t sum = 0;
+    std::vector<Interval>::const_iterator it;
+    for (it = intervals.begin(); it != intervals.end(); ++it) {
+      sum += it->elapsed();
+    }
+    return sum;
   }
 
 private:
-  clock_t tStart = 0;
-  clock_t tStop = 0;
-  bool running = false;
+  struct Interval {
+    clock_t tStart;
+    clock_t tStop;
+    bool running;
+    clock_t elapsed() const {
+      if (running)
+        return (clock() - tStart) * 1000 / CLOCKS_PER_SEC;
+      return (tStop - tStart) * 1000 / CLOCKS_PER_SEC;
+    }
+  };
+
+  std::vector<Interval> intervals;
 };
 
 /**
@@ -50,6 +107,14 @@ private:
  */
 class TestContext {
 public:
+  TestContext(std::ostream& out=std::cout)
+    : out(out),
+      assertionNum(1),
+      successCt(0),
+      failedCt(0),
+      currentAssertionsFailed(0)
+  { }
+
   /**
    * If actual == theoretical, does nothing. Otherwise, increments the tests failed count.
    * Returns the result of `actual == theoretical`.
@@ -60,7 +125,7 @@ public:
   /**
    * Runs the func and prints the results, including the time elapsed.
    */
-  void test(std::string name, std::function<void(TestContext&)> func);
+  void test(std::string name, TestFunction func);
 
   /**
    * Prints the number of tests run and number of tests that failed.
@@ -69,84 +134,98 @@ public:
 
 private:
   // incremented for every expectXXX() call
-  int testNum = 1;
+  int assertionNum;
 
-  int successCt = 0;
-  int failedCt = 0;
+  // totals for passed and failed assertions
+  int successCt;
+  int failedCt;
 
   // Keeps track of the number of failed expectXXX() calls in the current test() call.
-  int currentTestFailed = 0;
+  int currentAssertionsFailed;
+
+  std::ostream& out;
+  Stopwatch watch;
 };
 
-/**
- * Output a vector.
- */
-template <typename T>
-std::ostream& operator<<(std::ostream& out, const std::vector<T> v);
+#ifdef EZ_DEFINE_VECTOR_OUTPUT
+
+  /**
+  * Output a vector.
+  */
+  template <typename T>
+  std::ostream& operator<<(std::ostream& out, const std::vector<T> v);
+
+#endif // EZ_DEFINE_VECTOR_OUTPUT
 
 // --------------------------
 
 template <typename T, typename U>
 bool TestContext::expectEqual(const T& actual, const U& theoretical) {
+  watch.stop();
   bool result = true;
   if (theoretical != actual) {
-    if (currentTestFailed < 6) {
-      std::cout << "FAILED [" << testNum << "]: expected "
-                << theoretical << ", got " << actual << '\n';
+    if (currentAssertionsFailed < 6) {
+      std::cout << "\n  FAILED [" << assertionNum << "]: expected "
+                << theoretical << ", got " << actual << std::endl;
     }
     result = false;
     failedCt++;
-    currentTestFailed++;
+    currentAssertionsFailed++;
   }
   else {
     successCt++;
   }
-  testNum++;
+  assertionNum++;
+  watch.start();
   return result;
 }
 
-void TestContext::test(std::string name, std::function<void(TestContext&)> func) {
-  currentTestFailed = 0;
-  std::chrono::high_resolution_clock clk;
+void TestContext::test(std::string name, TestFunction func) {
+  currentAssertionsFailed = 0;
   std::cout << name << "...";
-  auto t1 = clk.now();
+  std::cout.flush();
+  watch.start();
   func(*this);
-  auto t2 = clk.now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
-  if (currentTestFailed > 5) {
-    std::cout << "[" << (currentTestFailed-5) << " other failures omitted]\n";
+  watch.stop();
+  if (currentAssertionsFailed > 5) {
+    out << "[" << (currentAssertionsFailed-5) << " other failures omitted]\n";
   }
 
-  if (currentTestFailed == 0) {
-    std::cout << " PASS (" << ms.count() << " ms)\n";
+  if (currentAssertionsFailed == 0) {
+    out << " PASS (" << watch.elapsed() << " ms)\n";
   }
   else {
-    std::cout << name << "... FAIL (" << ms.count() << " ms)\n";
+    out << name << "... FAIL (" << watch.elapsed() << " ms)\n";
   }
+  watch.reset();
 }
 
 void TestContext::printResults() const {
-  std::cout << "===================================\n"
-            << "TESTS FAILED:    " << std::setw(7) << failedCt << '\n'
-            << "TESTS PERFORMED: " << std::setw(7) << (failedCt + successCt) << '\n'
-            << "===================================\n";
+  out << "===================================\n"
+      << "ASSERTIONS FAILED:    " << std::setw(7) << failedCt << '\n'
+      << "ASSERTIONS MADE:      " << std::setw(7) << (failedCt + successCt) << '\n'
+      << "===================================\n";
 }
 
-template <typename T>
-std::ostream& operator<<(std::ostream& out, const std::vector<T> v) {
-  size_t len = v.size();
-  out << '{';
-  for (size_t i = 0; i < len; i++) {
-    out << v[i];
-    if (i < len - 1) {
-      out << ',';
+} // namespace test
+
+#ifdef EZ_DEFINE_VECTOR_OUTPUT
+
+  template <typename T>
+  std::ostream& operator<<(std::ostream& out, const std::vector<T> v) {
+    size_t len = v.size();
+    out << '{';
+    for (size_t i = 0; i < len; i++) {
+      out << v[i];
+      if (i < len - 1) {
+        out << ',';
+      }
     }
+    out << '}';
+
+    return out;
   }
-  out << '}';
 
-  return out;
-}
-
-}
+#endif // EZ_DEFINE_VECTOR_OUTPUT
 
 #endif
